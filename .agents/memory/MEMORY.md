@@ -1,1 +1,2 @@
 - [Guest bot like limitation](guest-bot-like-limitation.md) — Level 0 API bots silently rejected by LikeProfile; only Level 2+ real-played accounts count.
+- [CF Worker TCP bridge](cf-worker-tcp-bridge.md) — bypass Replit port restrictions via Cloudflare Worker WSS→TCP relay for FF game server (port 17000/17001).
