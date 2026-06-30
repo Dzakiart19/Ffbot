@@ -1,185 +1,276 @@
 """
-Auto guest account generator.
-Menggunakan endpoint Garena untuk mendaftar akun guest baru secara otomatis.
-"""
-import uuid
-import time
-import logging
-import requests
-import json
-import os
+Auto guest account generator — working flow (verified OB54).
+Flow:
+  1. /guest:register      → dapat uid + password (Garena OAuth)
+  2. /guest/token:grant   → dapat access_token + open_id
+  3. /MajorRegister       → buat profil FF game
+  4. create_jwt()         → verifikasi JWT dapat diambil, catat lock_region
+  5. Simpan ke config
 
-from garena.token_manager import token_manager
+Tidak butuh TOR — IP Replit tidak diblok Garena per 2025.
+"""
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import random
+import string
+import time
+
+import httpx
+import urllib3
+urllib3.disable_warnings()
+
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+
+from garena.get_jwt import create_jwt
 
 logger = logging.getLogger(__name__)
 
-# Garena guest registration endpoint (from APK reverse engineering)
-GUEST_REGISTER_URLS = {
-    "ID":     "https://loginbp.ggblueshark.com/MajorLogin",
-    "SG":     "https://loginbp.ggblueshark.com/MajorLogin",
-    "EUROPE": "https://loginbp.ggblueshark.com/MajorLogin",
-    "IND":    "https://loginbp.ind.freefiremobile.com/MajorLogin",
-    "BR":     "https://loginbp.us.freefiremobile.com/MajorLogin",
+# ── Garena OAuth constants ─────────────────────────────────────────────────────
+CLIENT_SECRET  = "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3"
+OAUTH_AGENT    = "GarenaMSDK/4.0.39(FRL-AN00a ;Android 10;nu;HK;)"
+REGISTER_URL   = "https://100067.connect.garena.com/api/v2/oauth/guest:register"
+TOKEN_URL      = "https://100067.connect.garena.com/api/v2/oauth/guest/token:grant"
+
+# ── AES (same key as like_api / get_jwt) ──────────────────────────────────────
+AES_KEY = bytes([89,103,38,116,99,37,68,69,117,104,54,37,90,99,94,56])
+AES_IV  = bytes([54,111,121,90,68,114,50,50,69,51,121,99,104,106,77,37])
+
+# ── XOR keystream used by generator for open_id encoding ─────────────────────
+_KEYSTREAM = [
+    0x30,0x30,0x30,0x32,0x30,0x31,0x37,0x30,0x30,0x30,0x30,0x30,
+    0x32,0x30,0x31,0x37,0x30,0x30,0x30,0x30,0x30,0x32,0x30,0x31,
+    0x37,0x30,0x30,0x30,0x30,0x30,0x32,0x30,
+]
+
+# ── Region → language code mapping ───────────────────────────────────────────
+REGION_LANG = {
+    "IND":"hi","ID":"id","SG":"ms","EUROPE":"fr","BR":"pt",
+    "VN":"vi","TH":"th","BD":"bn","ME":"ar","RU":"ru",
+    "NA":"na","SAC":"es","PK":"ur","TW":"zh","US":"us",
 }
 
-REGISTER_HEADERS = {
-    "User-Agent":      "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
-    "Connection":      "Keep-Alive",
-    "Accept-Encoding": "gzip",
-    "Content-Type":    "application/x-www-form-urlencoded",
-    "X-Unity-Version": "2018.4.11f1",
-    "X-GA":            "v1 1",
-    "ReleaseVersion":  "OB47.0.1",
+# ── Config paths ──────────────────────────────────────────────────────────────
+CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
+# Must match the file names used by like_api.py / token_manager.py
+REGION_CONFIG = {
+    "IND":    "ind_config.json",
+    "ID":     "sg_config.json",   # ID accounts live in sg_config (shared pool)
+    "SG":     "sg_config.json",
+    "EUROPE": "europe_config.json",
+    "RU":     "europe_config.json",
+    "BR":     "br_config.json",
+    "US":     "br_config.json",
 }
 
 
-def _generate_device_id() -> str:
-    return str(uuid.uuid4()).replace("-", "").upper()[:16]
+# ─────────────────────────────────────────────────────────────────────────────
+# Low-level helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _varint(n: int) -> bytes:
+    out = []
+    while True:
+        b = n & 0x7F; n >>= 7
+        if n: out.append(b | 0x80)
+        else: out.append(b); break
+    return bytes(out)
+
+def _pb_int(field: int, val: int) -> bytes:
+    return _varint((field << 3) | 0) + _varint(val)
+
+def _pb_str(field: int, val) -> bytes:
+    data = val.encode() if isinstance(val, str) else val
+    return _varint((field << 3) | 2) + _varint(len(data)) + data
+
+def _aes_encrypt(raw: bytes) -> bytes:
+    c = AES.new(AES_KEY, AES.MODE_CBC, AES_IV)
+    return c.encrypt(pad(raw, 16))
+
+def _xor_openid(open_id: str) -> bytes:
+    """XOR encode open_id as used in MajorRegister field 14."""
+    return bytes([ord(open_id[i]) ^ _KEYSTREAM[i % len(_KEYSTREAM)]
+                  for i in range(len(open_id))])
+
+def _gen_password(length: int = 12) -> str:
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choices(chars, k=length))
+
+def _superscript(num: int) -> str:
+    exp_digits = {'0':'⁰','1':'¹','2':'²','3':'³','4':'⁴',
+                  '5':'⁵','6':'⁶','7':'⁷','8':'⁸','9':'⁹'}
+    return ''.join(exp_digits[d] for d in f"{num:05d}")
 
 
-def _build_guest_payload(device_id: str) -> bytes:
+# ─────────────────────────────────────────────────────────────────────────────
+# Config helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _config_path(region: str) -> str:
+    fname = REGION_CONFIG.get(region.upper(), f"{region.lower()}_config.json")
+    return os.path.join(CONFIG_DIR, fname)
+
+def _load_config(region: str) -> list:
+    path = _config_path(region)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _save_config(region: str, accounts: list):
+    path = _config_path(region)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(accounts, f, indent=2)
+
+def _append_account(region: str, uid: str, password: str) -> bool:
+    """Add a new account to config file (if uid not already present)."""
+    accounts = _load_config(region)
+    if any(str(a.get("uid")) == str(uid) for a in accounts):
+        return False
+    accounts.append({"uid": str(uid), "password": password})
+    _save_config(region, accounts)
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core generation flow
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def create_guest_account(region: str = "IND") -> dict | None:
     """
-    Build protobuf payload for guest account registration.
-    Uses raw protobuf encoding for GuestMajorLogin.
-    Field 1 (platform, int32) = 3 (Android)
-    Field 2 (device_id, string)
-    Field 6 (garena, int32) = 1
-    """
-    def encode_varint(v):
-        buf = []
-        while True:
-            b = v & 0x7F
-            v >>= 7
-            if v:
-                buf.append(b | 0x80)
-            else:
-                buf.append(b)
-                break
-        return bytes(buf)
-
-    def encode_field(field_number, wire_type, value):
-        tag = (field_number << 3) | wire_type
-        return encode_varint(tag) + value
-
-    def encode_string(s):
-        b = s.encode("utf-8")
-        return encode_varint(len(b)) + b
-
-    payload  = encode_field(1, 0, encode_varint(3))
-    payload += encode_field(2, 2, encode_string(device_id))
-    payload += encode_field(6, 0, encode_varint(1))
-    return payload
-
-
-def create_guest_account(region: str = "ID") -> dict | None:
-    """
-    Try to auto-register a guest FF account.
-    Returns {"uid": str, "password": str} or None on failure.
+    Register one guest FF account for the given region.
+    Returns {"uid", "password", "lock_region", "server_url"} or None on failure.
     """
     region = region.upper()
-    url    = GUEST_REGISTER_URLS.get(region, GUEST_REGISTER_URLS["ID"])
-    device_id = _generate_device_id()
+    lang   = REGION_LANG.get(region, "en")
+    password = _gen_password()
 
     try:
-        payload = _build_guest_payload(device_id)
-        r = requests.post(url, data=payload, headers=REGISTER_HEADERS, timeout=12)
+        async with httpx.AsyncClient(verify=False, timeout=15) as client:
 
-        if r.status_code == 200 and r.content:
-            # Try to parse response protobuf
-            # Response typically contains uid (field 1) and token/password (field 2)
-            content = r.content
-            # Simple varint extractor for field 1 (uid)
-            uid = _extract_field_varint(content, 1)
-            pwd = _extract_field_string(content, 2) or device_id
+            # ── Step 1: Register Garena OAuth guest ──────────────────────────
+            body = json.dumps(
+                {"app_id": 100067, "client_type": 2, "password": password, "source": 2},
+                separators=(',', ':')
+            )
+            sig = hashlib.sha256((CLIENT_SECRET + body).encode()).hexdigest()
+            r1 = await client.post(REGISTER_URL, content=body.encode(),
+                headers={"User-Agent": OAUTH_AGENT,
+                         "Authorization": f"Signature {sig}",
+                         "Content-Type": "application/json; charset=utf-8"})
+            d1 = r1.json()
+            if d1.get("code") != 0:
+                logger.warning(f"[gen] Register failed: {d1}")
+                return None
+            uid = str(d1["data"]["uid"])
 
-            if uid and uid > 0:
-                logger.info(f"Guest account created: uid={uid}, region={region}")
-                return {"uid": str(uid), "password": str(pwd)}
+            # ── Step 2: Get OAuth token ───────────────────────────────────────
+            r2 = await client.post(TOKEN_URL,
+                json={"client_id": 100067, "client_secret": CLIENT_SECRET,
+                      "client_type": 2, "password": password,
+                      "response_type": "token", "uid": int(uid)},
+                headers={"User-Agent": OAUTH_AGENT, "Content-Type": "application/json"})
+            d2 = r2.json().get("data", {})
+            access_token = d2.get("access_token")
+            open_id      = d2.get("open_id")
+            if not access_token or not open_id:
+                logger.warning(f"[gen] Token grant failed: {r2.text[:200]}")
+                return None
 
-        logger.warning(f"Guest registration failed [{region}]: status={r.status_code}, body={r.content[:100]}")
-        return None
+            # ── Step 3: MajorRegister (create FF game profile) ───────────────
+            nick = "KiosGmr" + _superscript(random.randint(1, 99999))
+            pkt = (
+                _pb_str(1,  nick)         +
+                _pb_str(2,  access_token) +
+                _pb_str(3,  open_id)      +
+                _pb_int(5,  102000007)    +
+                _pb_int(6,  4)            +
+                _pb_int(7,  1)            +
+                _pb_int(13, 1)            +
+                _pb_str(14, _xor_openid(open_id)) +
+                _pb_str(15, lang)         +
+                _pb_int(16, 2)
+            )
+            r3 = await client.post(
+                "https://loginbp.ggpolarbear.com/MajorRegister",
+                content=_aes_encrypt(pkt),
+                headers={
+                    "Accept-Encoding": "gzip",
+                    "Authorization":   "Bearer",
+                    "Connection":      "Keep-Alive",
+                    "Content-Type":    "application/x-www-form-urlencoded",
+                    "Expect":          "100-continue",
+                    "Host":            "loginbp.ggpolarbear.com",
+                    "ReleaseVersion":  "OB54",
+                    "User-Agent":      "okhttp/3.12.1",
+                    "X-GA":            "v1 1",
+                    "X-Unity-Version": "2018.4.",
+                })
+            if r3.status_code != 200:
+                logger.warning(f"[gen] MajorRegister {r3.status_code}: {r3.text[:200]}")
+                return None
+
+        # ── Step 4: Verify JWT via create_jwt ────────────────────────────────
+        jwt, lock_region, server_url = await create_jwt(uid, password)
+        if not jwt:
+            logger.warning(f"[gen] JWT verification failed for uid={uid}")
+            return None
+
+        logger.info(f"[gen] ✅ uid={uid} lock={lock_region} srv={server_url}")
+        return {
+            "uid":        uid,
+            "password":   password,
+            "lock_region": lock_region,
+            "server_url":  server_url,
+        }
 
     except Exception as e:
-        logger.error(f"Guest auto-create error [{region}]: {e}")
+        logger.error(f"[gen] create_guest_account error: {e}")
         return None
 
 
-def _extract_field_varint(data: bytes, field_number: int) -> int | None:
-    i = 0
-    while i < len(data):
-        try:
-            tag_byte = data[i]; i += 1
-            field = tag_byte >> 3
-            wire  = tag_byte & 0x07
-            if wire == 0:  # varint
-                val, shift = 0, 0
-                while True:
-                    b = data[i]; i += 1
-                    val |= (b & 0x7F) << shift
-                    shift += 7
-                    if not (b & 0x80):
-                        break
-                if field == field_number:
-                    return val
-            elif wire == 2:  # length-delimited
-                length, shift = 0, 0
-                while True:
-                    b = data[i]; i += 1
-                    length |= (b & 0x7F) << shift
-                    shift += 7
-                    if not (b & 0x80):
-                        break
-                i += length
-            else:
-                break
-        except IndexError:
-            break
-    return None
+async def bulk_create_guests_async(region: str, count: int = 10,
+                                    delay: float = 0.8,
+                                    progress_cb=None) -> list:
+    """
+    Generate `count` guest accounts for `region`, save to config.
+    progress_cb(created, failed, total) called after each attempt if provided.
+    """
+    created = []
+    failed  = 0
 
+    for i in range(count):
+        acc = await create_guest_account(region)
+        if acc:
+            saved = _append_account(
+                acc.get("lock_region") or region,
+                acc["uid"],
+                acc["password"],
+            )
+            acc["saved"] = saved
+            created.append(acc)
+            logger.info(f"[gen] {i+1}/{count} OK uid={acc['uid']} saved={saved}")
+        else:
+            failed += 1
+            logger.warning(f"[gen] {i+1}/{count} FAILED (total failed={failed})")
 
-def _extract_field_string(data: bytes, field_number: int) -> str | None:
-    i = 0
-    while i < len(data):
-        try:
-            tag_byte = data[i]; i += 1
-            field = tag_byte >> 3
-            wire  = tag_byte & 0x07
-            if wire == 0:  # varint
-                while True:
-                    b = data[i]; i += 1
-                    if not (b & 0x80): break
-            elif wire == 2:  # length-delimited
-                length, shift = 0, 0
-                while True:
-                    b = data[i]; i += 1
-                    length |= (b & 0x7F) << shift
-                    shift += 7
-                    if not (b & 0x80): break
-                chunk = data[i:i+length]; i += length
-                if field == field_number:
-                    try:
-                        return chunk.decode("utf-8")
-                    except Exception:
-                        return chunk.hex()
-            else:
-                break
-        except IndexError:
-            break
-    return None
+        if progress_cb:
+            progress_cb(len(created), failed, count)
+
+        if i < count - 1:
+            await asyncio.sleep(delay)
+
+    logger.info(f"[gen] Done — created={len(created)} failed={failed}")
+    return created
 
 
 def bulk_create_guests(region: str, count: int = 10) -> list:
-    """Create multiple guest accounts for a region."""
-    created = []
-    failed  = 0
-    for i in range(count):
-        acc = create_guest_account(region)
-        if acc:
-            saved = token_manager.add_account(region, acc["uid"], acc["password"])
-            acc["saved"] = saved
-            created.append(acc)
-        else:
-            failed += 1
-        time.sleep(0.5)  # rate limit
-    logger.info(f"Bulk create [{region}]: {len(created)} created, {failed} failed")
-    return created
+    """Sync wrapper for bulk_create_guests_async (used by Flask routes)."""
+    return asyncio.run(bulk_create_guests_async(region, count))
