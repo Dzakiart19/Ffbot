@@ -28,8 +28,8 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 ReGiOn = "ID"
-NiCkNaMe = "Vaibhav"
-PaSsWoRd = "Vaibhav"
+NiCkNaMe = "KiosGmr"
+PaSsWoRd = "KIOSGMR"
 ToTaL = 100
 ThReAdS = 50
 GhOsT = False
