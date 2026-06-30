@@ -192,3 +192,57 @@ async def create_jwt(uid: str, password: str,
             continue
 
     raise ValueError(f"MajorLogin failed for uid={uid} — all platform types tried")
+
+
+async def create_jwt_full(uid: str, password: str,
+                          region: str = "") -> dict:
+    """
+    Same as create_jwt() but also returns TCP encryption keys and server info.
+    Returns: {
+      "token": str, "lock_region": str, "server_url": str,
+      "ak": bytes, "aiv": bytes, "kts": int, "tp_url": str
+    }
+    """
+    access_token, open_id = await get_oauth_token(uid, password)
+    if access_token == "0":
+        raise ValueError(f"OAuth failed for uid={uid}")
+
+    headers = {
+        "User-Agent":      USER_AGENT,
+        "Connection":      "Keep-Alive",
+        "Accept-Encoding": "gzip",
+        "Content-Type":    "application/octet-stream",
+        "Expect":          "100-continue",
+        "X-Unity-Version": "2018.4.11f1",
+        "X-GA":            "v1 1",
+        "ReleaseVersion":  RELEASE_VERSION,
+    }
+
+    for p_type in [4, 8, 3, 6]:
+        try:
+            payload = _build_majorlogin(access_token, open_id, p_type, region)
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.post(MAJOR_LOGIN_URL, content=payload, headers=headers)
+                if r.status_code != 200:
+                    continue
+
+                login_res = MajorLoginRes()
+                try:
+                    login_res.ParseFromString(_aes_decrypt(r.content))
+                except Exception:
+                    login_res.ParseFromString(r.content)
+
+                if login_res.token:
+                    return {
+                        "token":       login_res.token,
+                        "lock_region": login_res.lock_region or "0",
+                        "server_url":  login_res.server_url or "0",
+                        "ak":          login_res.ak,
+                        "aiv":         login_res.aiv,
+                        "kts":         login_res.kts,
+                        "tp_url":      login_res.tp_url or "",
+                    }
+        except Exception:
+            continue
+
+    raise ValueError(f"MajorLogin full failed for uid={uid}")
