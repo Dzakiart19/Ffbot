@@ -121,9 +121,11 @@ SESSION_POOL_SIZE = ThReAdS
 
 def init_session_pool():
     global session_pool
+    tor_available = subprocess.run(['which', 'tor'], capture_output=True).returncode == 0
     for _ in range(SESSION_POOL_SIZE):
         session = requests.Session()
-        session.proxies.update(get_proxies())
+        if tor_available:
+            session.proxies.update(get_proxies())
         session.verify = False
         session.timeout = 10
         session_pool.append(session)
@@ -758,8 +760,12 @@ class AcCoUnTcReAtOr:
 
     def rUn(self):
         self.load_existing_uids()
-        start_tor()
-        time.sleep(1)
+        tor_available = subprocess.run(['which', 'tor'], capture_output=True).returncode == 0
+        if tor_available:
+            start_tor()
+            time.sleep(1)
+        else:
+            print("[INFO] Tor tidak tersedia, menggunakan koneksi langsung.")
         init_session_pool()
 
         from concurrent.futures import ThreadPoolExecutor
