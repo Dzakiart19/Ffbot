@@ -42,8 +42,8 @@ users_col.create_index("email",    unique=True)
 
 # ─── Lazy-import garena module ─────────────────────────────────────────────
 try:
-    from garena.like_api   import send_like_real
-    from garena.guest_auto import bulk_create_guests, create_guest_account
+    from garena.like_api  import send_like_real
+    from garena.guest_gen import bulk_create_guests, create_guest_account
     from garena.token_manager import token_manager
     GARENA_OK = True
 except Exception as e:

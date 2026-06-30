@@ -751,12 +751,46 @@ class AcCoUnTcReAtOr:
                 with self.lock:
                     self.created_count += 1
                 self.save_single_account(acc)
+                # ── Simpan juga ke config/ supaya like_api bisa pakai ──
+                self._save_to_config(acc)
                 output_line = f"BOT = {acc.get('game_uid', '')} | UiD = {acc.get('uid', '')} | PassWord = {acc.get('password', '')} | NamE = {acc.get('nickname', '')} | ReGioN = {acc.get('region', '')}"
                 print(output_line)
             else:
                 time.sleep(0.1)
         if self.created_count >= self.total_target:
             self.stop = True
+
+    def _save_to_config(self, acc):
+        """Simpan akun ke config/{region}_config.json untuk like_api (thread-safe)."""
+        import json
+        region = str(acc.get("region", self.region)).upper()
+        config_map = {
+            "ID": "config/id_config.json", "IND": "config/ind_config.json",
+            "SG": "config/sg_config.json", "EUROPE": "config/europe_config.json",
+            "BR": "config/br_config.json", "US": "config/br_config.json",
+        }
+        cfg_path = config_map.get(region, f"config/{region.lower()}_config.json")
+
+        # Gunakan file_lock (per-instance) supaya worker paralel tidak corrupt JSON
+        with self.file_lock:
+            try:
+                accounts = []
+                if os.path.exists(cfg_path):
+                    with open(cfg_path) as f:
+                        accounts = json.load(f)
+                uid = str(acc.get("uid", ""))
+                if not any(str(a.get("uid")) == uid for a in accounts):
+                    accounts.append({
+                        "uid":         uid,
+                        "password":    acc.get("password", ""),
+                        "game_uid":    acc.get("game_uid", ""),
+                        "lock_region": region,
+                    })
+                    os.makedirs("config", exist_ok=True)
+                    with open(cfg_path, 'w') as f:
+                        json.dump(accounts, f, indent=2)
+            except Exception:
+                pass  # silent — jangan interrupt generate loop
 
     def rUn(self):
         self.load_existing_uids()
@@ -783,6 +817,80 @@ class AcCoUnTcReAtOr:
                     future.cancel()
                 except:
                     pass
+
+        # ── Aktivasi massal semua akun yang baru dibuat ─────────────────────
+        self._activate_all_accounts()
+
+    def _activate_all_accounts(self):
+        """Aktivasi massal semua akun dari GEN file secara paralel."""
+        import json
+        from concurrent.futures import ThreadPoolExecutor
+
+        folder = "GEN/GHOST" if self.ghost else f"GEN/{self.region}"
+        txt_path = os.path.join(folder, f"Accounts-{self.region}.txt")
+        if not os.path.exists(txt_path):
+            return
+
+        import re
+        accounts = []
+        with open(txt_path) as f:
+            for line in f:
+                uid_m = re.search(r'UiD = (\d+)', line)
+                pw_m  = re.search(r'PassWord = (\S+)', line)
+                if uid_m and pw_m:
+                    accounts.append({"uid": uid_m.group(1), "password": pw_m.group(1)})
+
+        if not accounts:
+            return
+
+        print(f"\n[AKTIVASI] Memulai aktivasi massal {len(accounts)} akun region {self.region}...")
+
+        region    = self.region
+        activated = {"ok": 0, "fail": 0}
+        lock      = threading.Lock()
+
+        def _activate_one(acc):
+            uid = acc["uid"]
+            pwd = acc["password"]
+            try:
+                # Import get_jwt untuk ambil JWT fresh
+                import asyncio
+                loop = asyncio.new_event_loop()
+                try:
+                    from garena.get_jwt import create_jwt
+                    jwt, lock_reg, _ = loop.run_until_complete(
+                        create_jwt(uid, pwd, region=region)
+                    )
+                finally:
+                    loop.close()
+
+                if not jwt:
+                    with lock: activated["fail"] += 1
+                    return False
+
+                effective = lock_reg if lock_reg and lock_reg not in ("0","None","") else region
+                from garena.guest_gen import _get_login_data, _new_session
+                session = _new_session()
+                ok = False
+                for _ in range(3):  # 3 rounds keepalive
+                    if _get_login_data(session, jwt, effective):
+                        ok = True
+                    time.sleep(1)
+
+                with lock:
+                    if ok: activated["ok"] += 1
+                    else:  activated["fail"] += 1
+                print(f"  [ACT] {uid} → {'✓' if ok else '✗'}")
+                return ok
+            except Exception as e:
+                with lock: activated["fail"] += 1
+                return False
+
+        workers = min(ThReAdS, len(accounts))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            list(ex.map(_activate_one, accounts))
+
+        print(f"[AKTIVASI] Selesai: {activated['ok']} berhasil, {activated['fail']} gagal")
 
 def bAnNeR():
     os.system('cls' if os.name == 'nt' else 'clear')
