@@ -45,6 +45,7 @@ try:
     from garena.like_api  import send_like_real
     from garena.guest_gen import bulk_create_guests, create_guest_account
     from garena.token_manager import token_manager
+    from garena.levelup   import levelup_accounts
     GARENA_OK = True
 except Exception as e:
     print(f"[WARN] Garena module import failed: {e}")
@@ -511,6 +512,68 @@ def admin_accounts(user):
         result[reg] = token_manager.count_accounts(reg)
 
     return jsonify({"accounts": result})
+
+
+@app.route("/api/admin/levelup", methods=["POST"])
+@require_admin
+def admin_levelup(user):
+    """
+    Levelup guest accounts via TCP auto-start.
+    Body: { "region": "ID", "count": 5, "team_code": "123456", "rounds": 3 }
+    The team code must come from a real FF room created by the user.
+    """
+    data      = request.get_json(silent=True) or {}
+    region    = data.get("region", "ID").upper()
+    team_code = str(data.get("team_code", "")).strip()
+    rounds    = int(data.get("rounds", 3))
+
+    try:
+        count = min(int(data.get("count", 5)), 20)
+    except (ValueError, TypeError):
+        return jsonify({"error": "count harus berupa angka"}), 400
+
+    if not team_code or not team_code.isdigit():
+        return jsonify({"error": "team_code wajib diisi (angka dari room FF kamu)"}), 400
+
+    if not GARENA_OK:
+        return jsonify({"error": "Garena module tidak tersedia"}), 500
+
+    # Load accounts for the region
+    cfg_map = {
+        "ID":     "config/id_config.json",
+        "SG":     "config/sg_config.json",
+        "IND":    "config/ind_config.json",
+        "BR":     "config/br_config.json",
+        "EUROPE": "config/europe_config.json",
+    }
+    cfg_path = cfg_map.get(region, "config/id_config.json")
+    try:
+        with open(cfg_path) as f:
+            all_accounts = json.load(f)
+        accounts = [
+            {"uid": str(a["uid"]), "password": str(a["password"])}
+            for a in all_accounts[:count]
+            if a.get("uid") and a.get("password")
+        ]
+    except Exception as e:
+        return jsonify({"error": f"Gagal load akun region {region}: {e}"}), 500
+
+    if not accounts:
+        return jsonify({"error": f"Tidak ada akun tersedia di region {region}"}), 503
+
+    def _run_bg():
+        result = levelup_accounts(accounts, team_code, region, rounds)
+        print(f"[LEVELUP] Done: {result['success']}/{result['total']} accounts leveled up")
+
+    threading.Thread(target=_run_bg, daemon=True).start()
+
+    return jsonify({
+        "message":    f"Levelup dimulai untuk {len(accounts)} akun region {region} di background",
+        "accounts":   len(accounts),
+        "team_code":  team_code,
+        "rounds":     rounds,
+        "note":       "Pastikan kamu sudah buka room FF dengan team code tersebut dan tunggu bot join",
+    })
 
 
 @app.route("/api/admin/make-admin", methods=["POST"])
