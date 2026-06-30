@@ -76,15 +76,23 @@ def _make_headers(token: str) -> dict:
 async def _get_player_info(uid: str, server_url: str, token: str) -> dict:
     try:
         payload = _build_info_payload(uid)
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, verify=False) as client:
             r = await client.post(
                 f"{server_url}/GetPlayerPersonalShow",
                 content=payload,
                 headers=_make_headers(token)
             )
             if r.status_code == 200 and r.content:
+                # Response is AES-encrypted — decrypt before parsing
+                from Crypto.Util.Padding import unpad
+                raw = r.content
+                try:
+                    cipher = AES.new(MAIN_KEY, AES.MODE_CBC, MAIN_IV)
+                    raw = unpad(cipher.decrypt(raw), AES.block_size)
+                except Exception:
+                    pass  # Not encrypted, use raw
                 info = AccountPersonalShowInfo()
-                info.ParseFromString(r.content)
+                info.ParseFromString(raw)
                 basic = info.basic_info
                 return {
                     "name":  basic.nickname or f"UID#{uid}",
