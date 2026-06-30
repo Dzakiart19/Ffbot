@@ -18,13 +18,21 @@ from garena.get_jwt                 import create_jwt, MAIN_KEY, MAIN_IV, RELEAS
 logger = logging.getLogger(__name__)
 
 SERVER_MAP = {
-    "IND": "https://client.ind.freefiremobile.com",
-    "BR":  "https://client.us.freefiremobile.com",
-    "US":  "https://client.us.freefiremobile.com",
-    "SAC": "https://client.us.freefiremobile.com",
-    "NA":  "https://client.us.freefiremobile.com",
+    "IND":    "https://client.ind.freefiremobile.com",
+    "BR":     "https://client.us.freefiremobile.com",
+    "US":     "https://client.us.freefiremobile.com",
+    "SAC":    "https://client.us.freefiremobile.com",
+    "NA":     "https://client.us.freefiremobile.com",
+    "EUROPE": "https://clientbp.ggpolarbear.com",
+    "SG":     "https://clientbp.ggpolarbear.com",
+    "ID":     "https://clientbp.ggpolarbear.com",
 }
-DEFAULT_SERVER = "https://clientbp.ggblueshark.com"
+DEFAULT_SERVER = "https://clientbp.ggpolarbear.com"
+
+
+def _get_target_server(region: str) -> str:
+    """Return the game server URL for the TARGET player's region."""
+    return SERVER_MAP.get(region.upper(), DEFAULT_SERVER)
 
 # AES for like payload (same key but bytes literal)
 LIKE_KEY = b'Yg&tc%DEuh6%Zc^8'
@@ -114,26 +122,41 @@ async def _send_one_like(guest: dict, target_uid: str, region: str) -> bool:
 
 
 def _load_accounts(region: str) -> list:
-    """Load ALL available accounts from all config files for maximum likes."""
-    all_accounts = []
-    seen_uids = set()
-    configs = [
+    """Load accounts for the target region first, then fall back to others."""
+    # Map target region → config file (matches token_manager.py)
+    REGION_CONFIG = {
+        "ID":     "config/sg_config.json",
+        "SG":     "config/sg_config.json",
+        "EUROPE": "config/europe_config.json",
+        "RU":     "config/europe_config.json",
+        "IND":    "config/ind_config.json",
+        "BR":     "config/br_config.json",
+        "US":     "config/br_config.json",
+    }
+    primary = REGION_CONFIG.get(region.upper(), "config/sg_config.json")
+    all_configs = [
+        primary,
         "config/sg_config.json",
         "config/ind_config.json",
         "config/br_config.json",
         "config/europe_config.json",
     ]
-    for path in configs:
+    all_accounts = []
+    seen_uids = set()
+    for path in all_configs:
         try:
             with open(path) as f:
                 for acc in json.load(f):
                     uid = str(acc.get("uid", ""))
                     if uid and uid not in seen_uids:
                         seen_uids.add(uid)
+                        # Mark accounts from the primary region config
+                        acc = dict(acc, primary=(path == primary))
                         all_accounts.append(acc)
         except Exception:
             pass
-    return all_accounts
+    # Sort: primary-region accounts first for better JWT success rate
+    return sorted(all_accounts, key=lambda a: (not a.get("primary", False)))
 
 
 def send_like_real(uid: str, region: str) -> dict:
@@ -155,29 +178,28 @@ def send_like_real(uid: str, region: str) -> dict:
     LIKE_CONCURRENT = 30    # parallel like sends (after tokens ready)
 
     async def _blast():
-        # Step 1 — info before (use first working account)
+        # Server for the TARGET player is determined by their region — not the guest's region
+        target_srv = _get_target_server(region)
+
+        # Step 1 — info before (use first working account, look up on target server)
         before_info = {"name": f"UID#{uid}", "likes": 0}
         first_token = None
-        first_srv   = DEFAULT_SERVER
 
         for acc in accounts[:5]:
             try:
-                tok, _, srv = await create_jwt(acc["uid"], acc["password"])
-                srv = srv if srv and srv != "0" else DEFAULT_SERVER
+                tok, _, _ = await create_jwt(acc["uid"], acc["password"])
                 first_token = tok
-                first_srv   = srv
-                before_info = await _get_player_info(uid, srv, tok)
+                before_info = await _get_player_info(uid, target_srv, tok)
                 break
             except Exception:
                 await asyncio.sleep(0.2)
 
         # Step 2 — pre-fetch all JWT tokens sequentially
-        ready = []  # list of (token, server_url, region)
+        ready = []  # list of tokens
         for acc in accounts:
             try:
-                tok, lock_reg, srv = await create_jwt(acc["uid"], acc["password"])
-                srv = srv if srv and srv != "0" else DEFAULT_SERVER
-                ready.append((tok, srv, lock_reg or region))
+                tok, _, _ = await create_jwt(acc["uid"], acc["password"])
+                ready.append(tok)
                 logger.debug(f"[token] {acc['uid']} OK")
             except Exception as e:
                 logger.debug(f"[token] {acc['uid']} fail: {e}")
@@ -186,16 +208,16 @@ def send_like_real(uid: str, region: str) -> dict:
         if not ready:
             return before_info, before_info, 0
 
-        # Step 3 — blast likes concurrently using pre-fetched tokens
+        # Step 3 — blast likes concurrently on target server
         like_payload = _build_like_payload(uid, region)
         semaphore = asyncio.Semaphore(LIKE_CONCURRENT)
 
-        async def _do_like(token, srv, _reg):
+        async def _do_like(token):
             async with semaphore:
                 try:
-                    async with httpx.AsyncClient(timeout=20) as client:
+                    async with httpx.AsyncClient(timeout=20, verify=False) as client:
                         r = await client.post(
-                            f"{srv}/LikeProfile",
+                            f"{target_srv}/LikeProfile",
                             content=like_payload,
                             headers=_make_headers(token)
                         )
@@ -203,15 +225,14 @@ def send_like_real(uid: str, region: str) -> dict:
                 except Exception:
                     return False
 
-        like_tasks = [_do_like(tok, srv, reg) for tok, srv, reg in ready]
-        results    = await asyncio.gather(*like_tasks, return_exceptions=True)
-        sent       = sum(1 for r in results if r is True)
+        results = await asyncio.gather(*[_do_like(tok) for tok in ready], return_exceptions=True)
+        sent    = sum(1 for r in results if r is True)
 
         # Step 4 — info after
         after_info = before_info.copy()
         if first_token:
             try:
-                after_info = await _get_player_info(uid, first_srv, first_token)
+                after_info = await _get_player_info(uid, target_srv, first_token)
             except Exception:
                 pass
 
