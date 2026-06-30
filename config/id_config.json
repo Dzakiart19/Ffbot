@@ -12,5 +12,35 @@
     "uid": "5422182349",
     "password": "UBAV8rpR6wO4",
     "game_uid": "16247280892"
+  },
+  {
+    "uid": "5423541502",
+    "password": "KIOSGMR_98GWK6-GMRSWX5_-H",
+    "game_uid": "16248168005",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423541504",
+    "password": "KIOSGMR_YJXZS2-GMRS9.K1.N",
+    "game_uid": "16248168006",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423541501",
+    "password": "KIOSGMR_FICS2J-GMRSS4A34L",
+    "game_uid": "16248168009",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423541505",
+    "password": "KIOSGMR_VU_CLK-GMRS5ZKS8G",
+    "game_uid": "16248168010",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423541506",
+    "password": "KIOSGMR_Z9QZ.K-GMRSJEPWR3",
+    "game_uid": "16248168012",
+    "lock_region": "ID"
   }
 ]
