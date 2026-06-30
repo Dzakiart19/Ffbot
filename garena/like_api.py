@@ -195,12 +195,12 @@ def send_like_real(uid: str, region: str) -> dict:
                 await asyncio.sleep(0.2)
 
         # Step 2 — pre-fetch all JWT tokens sequentially
-        ready = []  # list of tokens
+        ready = []  # list of (token, lock_region)
         for acc in accounts:
             try:
-                tok, _, _ = await create_jwt(acc["uid"], acc["password"])
-                ready.append(tok)
-                logger.debug(f"[token] {acc['uid']} OK")
+                tok, lock_reg, _ = await create_jwt(acc["uid"], acc["password"])
+                ready.append((tok, lock_reg or region))
+                logger.debug(f"[token] {acc['uid']} OK lock={lock_reg}")
             except Exception as e:
                 logger.debug(f"[token] {acc['uid']} fail: {e}")
             await asyncio.sleep(JWT_DELAY)
@@ -209,23 +209,25 @@ def send_like_real(uid: str, region: str) -> dict:
             return before_info, before_info, 0
 
         # Step 3 — blast likes concurrently on target server
-        like_payload = _build_like_payload(uid, region)
+        # Use each account's lock_region in the payload — Garena validates this server-side
         semaphore = asyncio.Semaphore(LIKE_CONCURRENT)
 
-        async def _do_like(token):
+        async def _do_like(token, lock_reg):
             async with semaphore:
                 try:
+                    payload = _build_like_payload(uid, lock_reg)
                     async with httpx.AsyncClient(timeout=20, verify=False) as client:
                         r = await client.post(
                             f"{target_srv}/LikeProfile",
-                            content=like_payload,
+                            content=payload,
                             headers=_make_headers(token)
                         )
+                        logger.debug(f"LikeProfile lock={lock_reg} status={r.status_code}")
                         return r.status_code in (200, 204)
                 except Exception:
                     return False
 
-        results = await asyncio.gather(*[_do_like(tok) for tok in ready], return_exceptions=True)
+        results = await asyncio.gather(*[_do_like(tok, reg) for tok, reg in ready], return_exceptions=True)
         sent    = sum(1 for r in results if r is True)
 
         # Step 4 — info after
