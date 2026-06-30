@@ -270,37 +270,56 @@ async function sendLike() {
   }
 }
 
-async function createLobby() {
+let _lobbyOrderId = null;
+
+async function lobbyStep1() {
   if (!requireLogin()) return;
-  const uid = document.getElementById("lobby-uid").value.trim();
+  const uid    = document.getElementById("lobby-uid").value.trim();
   const region = document.getElementById("lobby-region").value;
   const result = document.getElementById("lobby-result");
-  const btn = document.querySelector(".btn-blue");
+  const btn    = document.querySelector("#lobby-step1 .btn-blue");
 
   if (!uid) { toast("Masukkan UID Free Fire!", "error"); return; }
   if (!/^\d+$/.test(uid)) { toast("UID harus berupa angka!", "error"); return; }
 
-  setLoading(btn, "⏳ Membuat...");
-  result.className = "tool-result loading";
-  result.textContent = "⏳ Membuat Lobby 5 di server Garena...";
+  setLoading(btn, "⏳ Memproses...");
+  result.className = "tool-result";
+  result.textContent = "";
 
   try {
     const r = await fetch(`${API}/api/lobby`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${getToken()}`
-      },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
       body: JSON.stringify({ uid, region })
     });
     const data = await r.json();
+
     if (r.ok && data.success) {
-      result.className = "tool-result success";
-      const accInfo = data.accounts_used > 0
-        ? `<br><small style="color:var(--text-dim)">${data.accounts_used} guest account digunakan</small>`
-        : "";
-      result.innerHTML = `✅ Lobby berhasil dibuat!<br>🔑 Kode: <b style="font-size:20px;letter-spacing:4px;color:#ffd700">${data.lobby_code}</b>${accInfo}`;
-      toast(`Lobby dibuat! Kode: ${data.lobby_code} 👥`, "success");
+      _lobbyOrderId = data.order_id;
+
+      // Tampilkan UID bot dengan tombol copy
+      const botList = data.bot_uids.map((u, i) =>
+        `<div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0;background:rgba(0,0,0,.25);padding:8px 12px;border-radius:8px">
+          <span>🤖 Bot ${i+1}: <b style="letter-spacing:1px">${u}</b></span>
+          <button onclick="copyText('${u}',this)" style="background:#ffd700;color:#000;border:none;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700">COPY</button>
+        </div>`
+      ).join("");
+
+      document.getElementById("lobby-bot-box").innerHTML =
+        `<div style="font-weight:700;margin-bottom:8px">📋 Langkah-langkah:</div>
+         <div style="font-size:13px;margin-bottom:10px;line-height:1.7">
+           1️⃣ Buka Free Fire → Profil → Tambah Teman<br>
+           2️⃣ Cari dan tambahkan UID bot di bawah ini<br>
+           3️⃣ Tunggu bot online, mereka akan invite kamu ke lobby<br>
+           4️⃣ Klik <b>Sudah Add Bot</b> setelah selesai menambahkan
+         </div>
+         <div style="font-size:12px;color:#aaa;margin-bottom:8px">UID Bot (region ${data.region}):</div>
+         ${botList}
+         <div style="font-size:11px;color:#aaa;margin-top:10px">Order ID: ${data.order_id}</div>`;
+
+      document.getElementById("lobby-step1").style.display = "none";
+      document.getElementById("lobby-step2").style.display = "block";
+      toast("Tambahkan bot sebagai teman di FF! 👥", "success");
       refreshMe();
     } else {
       result.className = "tool-result error";
@@ -312,6 +331,50 @@ async function createLobby() {
   } finally {
     clearLoading(btn);
   }
+}
+
+async function lobbyConfirm() {
+  if (!_lobbyOrderId) { toast("Mulai dari langkah 1 dulu!", "error"); return; }
+  const result = document.getElementById("lobby-result");
+  const btn    = document.querySelector("#lobby-step2 .btn-green");
+
+  setLoading(btn, "⏳ Konfirmasi...");
+
+  try {
+    const r = await fetch(`${API}/api/lobby/confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ order_id: _lobbyOrderId })
+    });
+    const data = await r.json();
+
+    if (r.ok && data.success) {
+      result.className = "tool-result success";
+      result.innerHTML = `✅ ${data.message}<br><small style="color:#aaa">Order: ${_lobbyOrderId}</small>`;
+      document.getElementById("lobby-step2").style.display = "none";
+      document.getElementById("lobby-step1").style.display = "block";
+      document.getElementById("lobby-uid").value = "";
+      _lobbyOrderId = null;
+      toast("Konfirmasi berhasil! Tunggu invite dari bot 👥", "success");
+    } else {
+      result.className = "tool-result error";
+      result.textContent = "❌ " + (data.error || "Gagal konfirmasi");
+    }
+  } catch {
+    result.className = "tool-result error";
+    result.textContent = "❌ Koneksi error.";
+  } finally {
+    clearLoading(btn);
+  }
+}
+
+function copyText(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = "✓ COPIED";
+    btn.style.background = "#00e676";
+    setTimeout(() => { btn.textContent = orig; btn.style.background = "#ffd700"; }, 1500);
+  });
 }
 
 /* ─── PROGRESS ──────────────────────────────── */

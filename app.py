@@ -271,6 +271,23 @@ def send_like(user):
 
 
 # ─── Routes: lobby ──────────────────────────────────────────────────────────
+REGION_BOT_CONFIG = {
+    "ID":  "config/id_config.json",
+    "SG":  "config/sg_config.json",
+    "IND": "config/ind_config.json",
+    "BR":  "config/br_config.json",
+    "EU":  "config/europe_config.json",
+}
+
+def _get_bot_uids(region, limit=4):
+    cfg_path = REGION_BOT_CONFIG.get(region, "config/id_config.json")
+    try:
+        with open(cfg_path) as f:
+            accounts = json.load(f)
+        return [str(a["uid"]) for a in accounts[:limit] if a.get("uid")]
+    except Exception:
+        return []
+
 @app.route("/api/lobby", methods=["POST"])
 @require_auth
 def create_lobby(user):
@@ -281,36 +298,50 @@ def create_lobby(user):
     if not uid or not uid.isdigit():
         return jsonify({"error": "UID harus berupa angka"}), 400
 
-    # Generate lobby code using guest tokens if available
-    lobby_code = "".join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", k=8))
-    accounts_used = 0
-
-    if GARENA_OK:
-        tokens = token_manager.get_tokens(region)
-        accounts_used = min(4, len(tokens))
+    bot_uids = _get_bot_uids(region, limit=4)
+    if not bot_uids:
+        return jsonify({"error": f"Tidak ada bot tersedia untuk region {region}"}), 503
 
     order_id = str(uuid.uuid4())[:8].upper()
     orders_col.insert_one({
-        "_id":         order_id,
-        "type":        "lobby",
-        "uid":         uid,
-        "region":      region,
-        "user_id":     user["_id"],
-        "lobby_code":  lobby_code,
-        "created_at":  datetime.now(timezone.utc).isoformat(),
-        "status":      "completed",
+        "_id":        order_id,
+        "type":       "lobby",
+        "uid":        uid,
+        "region":     region,
+        "user_id":    user["_id"],
+        "bot_uids":   bot_uids,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status":     "pending",
     })
     users_col.update_one({"_id": user["_id"]}, {"$inc": {"lobbies_created": 1}})
 
     return jsonify({
-        "success":       True,
-        "order_id":      order_id,
-        "uid":           uid,
-        "region":        region,
-        "lobby_code":    lobby_code,
-        "accounts_used": accounts_used,
-        "message":       "Lobby berhasil dibuat!",
+        "success":  True,
+        "order_id": order_id,
+        "uid":      uid,
+        "region":   region,
+        "bot_uids": bot_uids,
+        "message":  "Tambahkan akun bot ini sebagai teman di FF, lalu masuk ke lobby mereka.",
     })
+
+
+@app.route("/api/lobby/confirm", methods=["POST"])
+@require_auth
+def confirm_lobby(user):
+    data     = request.get_json(silent=True) or {}
+    order_id = str(data.get("order_id", "")).strip().upper()
+    if not order_id:
+        return jsonify({"error": "order_id diperlukan"}), 400
+
+    order = orders_col.find_one({"_id": order_id, "user_id": user["_id"], "type": "lobby"})
+    if not order:
+        return jsonify({"error": "Order tidak ditemukan"}), 404
+
+    orders_col.update_one(
+        {"_id": order_id},
+        {"$set": {"status": "confirmed", "confirmed_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return jsonify({"success": True, "message": "Konfirmasi diterima! Bot akan segera mengundang kamu ke lobby."})
 
 
 # ─── Routes: bio ────────────────────────────────────────────────────────────

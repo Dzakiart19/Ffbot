@@ -74,18 +74,26 @@
     <div class="tool-card">
       <div class="tool-icon">👥</div>
       <div class="tool-name">Lobby 5</div>
-      <div class="tool-desc">Buat lobby otomatis 5 orang. Masukkan UID kamu dan pilih region server.</div>
-      <div class="input-group">
-        <input class="input-field" id="lobby-uid" type="text" placeholder="Masukkan UID Free Fire" maxlength="20">
-        <select class="select-field" id="lobby-region">
-          <option value="ID">🇮🇩 Indonesia (ID)</option>
-          <option value="SG">🇸🇬 Singapore (SG)</option>
-          <option value="IND">🇮🇳 India (IND)</option>
-          <option value="BR">🇧🇷 Brazil (BR)</option>
-          <option value="EU">🇪🇺 Europe (EU)</option>
-        </select>
+      <div class="tool-desc">Bot kami akan masuk lobby bareng kamu. Ikuti langkah di bawah.</div>
+
+      <!-- Step 1: input UID -->
+      <div id="lobby-step1">
+        <div class="input-group">
+          <input class="input-field" id="lobby-uid" type="text" placeholder="Masukkan UID Free Fire kamu" maxlength="20">
+          <select class="select-field" id="lobby-region">
+            <option value="ID">🇮🇩 Indonesia (ID)</option>
+            <option value="SG">🇸🇬 Singapore (SG)</option>
+          </select>
+        </div>
+        <button class="btn-action btn-blue" onclick="lobbyStep1()">👥 BUAT LOBBY 5</button>
       </div>
-      <button class="btn-action btn-blue" onclick="createLobby()">👥 BUAT LOBBY 5</button>
+
+      <!-- Step 2: tambah bot (hidden awalnya) -->
+      <div id="lobby-step2" style="display:none">
+        <div class="tool-result success" id="lobby-bot-box"></div>
+        <button class="btn-action btn-green" onclick="lobbyConfirm()" style="margin-top:10px">✅ SUDAH ADD BOT, LANJUT</button>
+      </div>
+
       <div class="tool-result" id="lobby-result"></div>
     </div>
 

@@ -388,6 +388,11 @@ nav {
   color: #fff;
 }
 .btn-blue:hover { box-shadow: 0 0 20px rgba(0,100,255,0.4); transform: translateY(-1px); }
+.btn-green {
+  background: linear-gradient(135deg, #00c853, #009624);
+  color: #fff;
+}
+.btn-green:hover { box-shadow: 0 0 20px rgba(0,200,83,0.4); transform: translateY(-1px); }
 .btn-gold {
   background: linear-gradient(135deg, var(--accent2), #cc9900);
   color: #000;
