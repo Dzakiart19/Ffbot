@@ -75,6 +75,8 @@ async function refreshMe() {
       currentUser = data;
       localStorage.setItem("kios_user", JSON.stringify(data));
       updateUI();
+    } else if (r.status === 401) {
+      logout();
     }
   } catch {}
 }
@@ -131,6 +133,10 @@ async function doLogin(e) {
     return;
   }
 
+  const btn = e.target.querySelector("button[type=submit]");
+  btn.disabled = true;
+  btn.textContent = "⏳ Login...";
+
   try {
     const r = await fetch(`${API}/api/login`, {
       method: "POST",
@@ -149,6 +155,9 @@ async function doLogin(e) {
   } catch {
     msg.className = "modal-msg error";
     msg.textContent = "Koneksi error. Coba lagi.";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔐 LOGIN";
   }
 }
 
@@ -164,6 +173,10 @@ async function doRegister(e) {
     msg.textContent = "Isi semua field!";
     return;
   }
+
+  const btn = e.target.querySelector("button[type=submit]");
+  btn.disabled = true;
+  btn.textContent = "⏳ Mendaftar...";
 
   try {
     const r = await fetch(`${API}/api/register`, {
@@ -183,6 +196,9 @@ async function doRegister(e) {
   } catch {
     msg.className = "modal-msg error";
     msg.textContent = "Koneksi error. Coba lagi.";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🚀 DAFTAR SEKARANG";
   }
 }
 
@@ -196,17 +212,29 @@ function requireLogin() {
   return true;
 }
 
+function setLoading(btn, loadingText) {
+  btn.disabled = true;
+  btn._origText = btn.textContent;
+  btn.textContent = loadingText;
+}
+function clearLoading(btn) {
+  btn.disabled = false;
+  btn.textContent = btn._origText;
+}
+
 async function sendLike() {
   if (!requireLogin()) return;
   const uid = document.getElementById("like-uid").value.trim();
   const region = document.getElementById("like-region").value;
   const result = document.getElementById("like-result");
+  const btn = document.querySelector(".btn-orange");
 
   if (!uid) { toast("Masukkan UID Free Fire!", "error"); return; }
   if (!/^\d+$/.test(uid)) { toast("UID harus berupa angka!", "error"); return; }
 
+  setLoading(btn, "⏳ Mengirim...");
   result.className = "tool-result loading";
-  result.textContent = "⏳ Mengirim like ke server Garena...";
+  result.textContent = "⏳ Menghubungi server Garena... (bisa 15–60 detik)";
 
   try {
     const r = await fetch(`${API}/api/like`, {
@@ -224,22 +252,21 @@ async function sendLike() {
       const likeInfo = data.likes_before > 0
         ? `<br>📊 Before: <b>${data.likes_before.toLocaleString()}</b> → After: <b>${data.likes_after.toLocaleString()}</b>`
         : "";
-      const accInfo = data.accounts_used > 0 ? ` via ${data.accounts_used} guest account` : "";
-      result.innerHTML = `✅ <b>+${data.likes_added}</b> Like berhasil dikirim ke ${playerInfo}${likeInfo}${accInfo}`;
-      toast(`+${data.likes_added} like dikirim ke ${data.player_name || uid}! ❤️`, "success");
-      if (currentUser) {
-        currentUser.likes_sent = (currentUser.likes_sent || 0) + data.likes_added;
-        updateUI();
-      }
+      const accInfo = data.accounts_used > 0 ? `<br><small style="color:var(--text-dim)">${data.accounts_used} guest account digunakan</small>` : "";
+      result.innerHTML = `✅ Like berhasil dikirim ke ${playerInfo}${likeInfo}${accInfo}
+        <br><small style="color:var(--text-dim)">Counter like di profil akan update dalam 1–5 menit</small>`;
+      toast(`Like dikirim ke ${data.player_name || uid}! ❤️`, "success");
+      refreshMe();
       loadProgress();
     } else {
       result.className = "tool-result error";
-      const errMsg = data.error || data.message || "Gagal mengirim like";
-      result.innerHTML = `❌ ${errMsg}${data.error && data.error.includes("guest account") ? `<br><small>Tambah guest account via Admin Panel atau hubungi admin.</small>` : ""}`;
+      result.innerHTML = `❌ ${data.error || data.message || "Gagal mengirim like"}`;
     }
   } catch {
     result.className = "tool-result error";
     result.textContent = "❌ Koneksi error. Coba lagi.";
+  } finally {
+    clearLoading(btn);
   }
 }
 
@@ -248,10 +275,12 @@ async function createLobby() {
   const uid = document.getElementById("lobby-uid").value.trim();
   const region = document.getElementById("lobby-region").value;
   const result = document.getElementById("lobby-result");
+  const btn = document.querySelector(".btn-blue");
 
   if (!uid) { toast("Masukkan UID Free Fire!", "error"); return; }
   if (!/^\d+$/.test(uid)) { toast("UID harus berupa angka!", "error"); return; }
 
+  setLoading(btn, "⏳ Membuat...");
   result.className = "tool-result loading";
   result.textContent = "⏳ Membuat Lobby 5 di server Garena...";
 
@@ -267,9 +296,12 @@ async function createLobby() {
     const data = await r.json();
     if (r.ok && data.success) {
       result.className = "tool-result success";
-      const accInfo = data.accounts_used > 0 ? `<br><small style="color:var(--text-dim)">${data.accounts_used} guest account digunakan</small>` : "";
+      const accInfo = data.accounts_used > 0
+        ? `<br><small style="color:var(--text-dim)">${data.accounts_used} guest account digunakan</small>`
+        : "";
       result.innerHTML = `✅ Lobby berhasil dibuat!<br>🔑 Kode: <b style="font-size:20px;letter-spacing:4px;color:#ffd700">${data.lobby_code}</b>${accInfo}`;
       toast(`Lobby dibuat! Kode: ${data.lobby_code} 👥`, "success");
+      refreshMe();
     } else {
       result.className = "tool-result error";
       result.textContent = "❌ " + (data.error || "Gagal membuat lobby");
@@ -277,43 +309,8 @@ async function createLobby() {
   } catch {
     result.className = "tool-result error";
     result.textContent = "❌ Koneksi error. Coba lagi.";
-  }
-}
-
-async function updateBio() {
-  if (!requireLogin()) return;
-  const uid = document.getElementById("bio-uid").value.trim();
-  const bio = document.getElementById("bio-text").value.trim();
-  const result = document.getElementById("bio-result");
-
-  if (!uid) { toast("Masukkan UID Free Fire!", "error"); return; }
-  if (!/^\d+$/.test(uid)) { toast("UID harus berupa angka!", "error"); return; }
-  if (!bio) { toast("Isi bio baru kamu!", "error"); return; }
-
-  result.className = "tool-result loading";
-  result.textContent = "⏳ Mengirim request ke server Garena...";
-
-  try {
-    const r = await fetch(`${API}/api/bio`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${getToken()}`
-      },
-      body: JSON.stringify({ uid, bio, region: "ID" })
-    });
-    const data = await r.json();
-    if (r.ok && data.success) {
-      result.className = "tool-result success";
-      result.innerHTML = `✅ Bio berhasil diperbarui untuk UID <b>${uid}</b>!<br><small style="color:#7a8ca0">Perubahan mungkin perlu beberapa menit untuk muncul di profil</small>`;
-      toast("Bio diperbarui! 📝", "success");
-    } else {
-      result.className = "tool-result error";
-      result.innerHTML = `❌ ${data.error || "Gagal memperbarui bio"}`;
-    }
-  } catch {
-    result.className = "tool-result error";
-    result.textContent = "❌ Koneksi error. Coba lagi.";
+  } finally {
+    clearLoading(btn);
   }
 }
 
@@ -322,13 +319,23 @@ async function loadProgress() {
   try {
     const r = await fetch(`${API}/api/progress`);
     const data = await r.json();
-    renderProgress(data.entries || []);
+    renderProgress(data.entries || [], data.source);
   } catch {}
 }
 
-function renderProgress(entries) {
+function renderProgress(entries, source) {
   const grid = document.getElementById("progress-grid");
+  const empty = document.getElementById("progress-empty");
+
+  if (!entries.length) {
+    grid.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+
+  empty.style.display = "none";
   grid.innerHTML = "";
+
   entries.forEach(e => {
     const pct = e.target > 0 ? Math.min(100, Math.round((e.proses / e.target) * 100)) : 0;
     const card = document.createElement("div");
@@ -337,16 +344,16 @@ function renderProgress(entries) {
       <div class="prog-header">
         <div>
           <div class="prog-name">${e.name}</div>
-          <div class="prog-uid">ID: ${e.uid}</div>
+          <div class="prog-uid">UID: ${e.uid}</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
           <div class="prog-status"></div>
-          <button class="prog-share" onclick="shareProgress('${e.uid}','${e.name}')">📤 Share</button>
+          <button class="prog-share" onclick="shareProgress('${e.uid}','${e.name}')">📤</button>
         </div>
       </div>
       <div class="prog-stats">
         Before: <span>${e.before.toLocaleString()}</span>
-        +<span style="color:var(--green)">${e.added.toLocaleString()}</span>
+        &nbsp;+<span style="color:var(--green)">${e.added.toLocaleString()}</span>&nbsp;
         Total: <span>${e.total.toLocaleString()}</span>
       </div>
       <div class="progress-bar-bg">
@@ -354,7 +361,7 @@ function renderProgress(entries) {
       </div>
       <div class="prog-footer">
         <span>⏳ ${e.proses.toLocaleString()} / ${e.target.toLocaleString()} Like</span>
-        <span>Tersisa: <span>${e.tersisa.toLocaleString()}</span></span>
+        <span>Tersisa: ${e.tersisa.toLocaleString()}</span>
       </div>
     `;
     grid.appendChild(card);
@@ -441,7 +448,7 @@ async function adminAutoGenerate() {
 
   result.style.display = "block";
   result.className = "tool-result loading";
-  result.textContent = `⏳ Generating ${count} guest account untuk ${region}...`;
+  result.textContent = `⏳ Generating ${count} guest account untuk ${region}... (background)`;
 
   try {
     const r = await fetch(`${API}/api/admin/auto-generate`, {
@@ -453,7 +460,33 @@ async function adminAutoGenerate() {
     result.className = "tool-result success";
     result.textContent = "✅ " + data.message;
     toast(data.message, "info");
-    setTimeout(loadAccountStats, 15000);
+    setTimeout(loadAccountStats, 30000);
+  } catch {
+    result.className = "tool-result error";
+    result.textContent = "❌ Koneksi error";
+  }
+}
+
+async function adminMakeAdmin(e) {
+  e.preventDefault();
+  const username = document.getElementById("make-admin-username").value.trim();
+  const result   = document.getElementById("admin-result");
+
+  if (!username) { toast("Isi username target!", "error"); return; }
+
+  result.style.display = "block";
+  result.className = "tool-result loading";
+  result.textContent = "⏳ Memproses...";
+
+  try {
+    const r = await fetch(`${API}/api/admin/make-admin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ username })
+    });
+    const data = await r.json();
+    result.className = r.ok ? "tool-result success" : "tool-result error";
+    result.textContent = (r.ok ? "✅ " : "❌ ") + (data.message || data.error);
   } catch {
     result.className = "tool-result error";
     result.textContent = "❌ Koneksi error";
@@ -467,16 +500,9 @@ document.addEventListener("DOMContentLoaded", () => {
   loadProgress();
   loadStats();
 
-  progressInterval = setInterval(loadProgress, 10000);
+  progressInterval = setInterval(loadProgress, 15000);
 
-  document.getElementById("nav-user-btn").addEventListener("click", () => {
-    if (currentUser) {
-      openModal();
-    } else {
-      openModal();
-    }
-  });
-
+  document.getElementById("nav-user-btn").addEventListener("click", openModal);
   document.getElementById("modal-close").addEventListener("click", closeModal);
   document.getElementById("auth-modal").addEventListener("click", (e) => {
     if (e.target === e.currentTarget) closeModal();
