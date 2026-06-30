@@ -46,8 +46,42 @@ def _aes_decrypt(data: bytes) -> bytes:
         return data
 
 
-def _build_majorlogin(access_token: str, open_id: str, platform_type: int = 4) -> bytes:
-    """Build MajorLogin protobuf with full device fingerprint."""
+# Region → realistic device fingerprint for MajorLogin
+_REGION_PROFILE = {
+    "SG":     {"ip": "103.252.202.50",  "carrier": "Singtel",       "lang": "en", "city": "Singapore"},
+    "ID":     {"ip": "103.85.24.10",    "carrier": "Telkomsel",      "lang": "id", "city": "Jakarta"},
+    "IND":    {"ip": "103.47.144.1",    "carrier": "Jio",            "lang": "hi", "city": "Mumbai"},
+    "EUROPE": {"ip": "91.108.56.100",   "carrier": "Orange",         "lang": "fr", "city": "Paris"},
+    "RU":     {"ip": "77.88.8.8",       "carrier": "Beeline",        "lang": "ru", "city": "Moscow"},
+    "BR":     {"ip": "177.75.8.10",     "carrier": "Claro",          "lang": "pt", "city": "Sao Paulo"},
+    "US":     {"ip": "8.8.8.8",         "carrier": "AT&T",           "lang": "en", "city": "New York"},
+    "ME":     {"ip": "5.1.41.10",       "carrier": "STC",            "lang": "ar", "city": "Riyadh"},
+    "TH":     {"ip": "27.145.130.10",   "carrier": "AIS",            "lang": "th", "city": "Bangkok"},
+    "VN":     {"ip": "14.177.16.10",    "carrier": "Viettel",        "lang": "vi", "city": "Hanoi"},
+}
+_DEFAULT_PROFILE = {"ip": "1.1.1.1", "carrier": "WIFI", "lang": "en", "city": "Singapore"}
+
+
+def _pb_raw_str(field: int, val: str) -> bytes:
+    """Append a raw protobuf length-delimited string field (for fields not in proto schema)."""
+    def varint(n):
+        out = []
+        while True:
+            b = n & 0x7F; n >>= 7
+            if n: out.append(b | 0x80)
+            else: out.append(b); break
+        return bytes(out)
+    data = val.encode()
+    return varint((field << 3) | 2) + varint(len(data)) + data
+
+
+def _build_majorlogin(access_token: str, open_id: str,
+                      platform_type: int = 4, region: str = "") -> bytes:
+    """Build MajorLogin protobuf with full device fingerprint.
+    region: if set, appends field 26 (region string) to tell Garena which server to assign.
+    """
+    prof = _REGION_PROFILE.get(region.upper(), _DEFAULT_PROFILE) if region else _DEFAULT_PROFILE
+
     m = MajorLogin()
     m.event_time           = str(datetime.now())[:-7]
     m.game_name            = "free fire"
@@ -55,7 +89,7 @@ def _build_majorlogin(access_token: str, open_id: str, platform_type: int = 4) -
     m.client_version       = "1.120.1"
     m.system_software      = "Android OS 9 / API-28"
     m.system_hardware      = "Handheld"
-    m.telecom_operator     = "Verizon"
+    m.telecom_operator     = prof["carrier"]
     m.network_type         = "WIFI"
     m.screen_width         = 1920
     m.screen_height        = 1080
@@ -65,8 +99,8 @@ def _build_majorlogin(access_token: str, open_id: str, platform_type: int = 4) -
     m.gpu_renderer         = "Adreno (TM) 640"
     m.gpu_version          = "OpenGL ES 3.1 v1.46"
     m.unique_device_id     = "Google|34a7dcdf-a7d5-4cb6-8d7e-3b0e448a0c57"
-    m.client_ip            = "223.191.51.89"
-    m.language             = "en"
+    m.client_ip            = prof["ip"]
+    m.language             = prof["lang"]
     m.open_id              = open_id
     m.open_id_type         = str(platform_type)
     m.device_type          = "Handheld"
@@ -81,7 +115,13 @@ def _build_majorlogin(access_token: str, open_id: str, platform_type: int = 4) -
     m.login_open_id_type   = platform_type
     m.origin_platform_type = str(platform_type)
     m.primary_platform_type= str(platform_type)
-    return _aes_encrypt(m.SerializeToString())
+
+    proto_bytes = m.SerializeToString()
+    # Field 26 = region (not in .proto schema, append as raw bytes)
+    if region:
+        proto_bytes += _pb_raw_str(26, region.upper())
+
+    return _aes_encrypt(proto_bytes)
 
 
 async def get_oauth_token(uid: str, password: str) -> tuple[str, str]:
@@ -103,10 +143,12 @@ async def get_oauth_token(uid: str, password: str) -> tuple[str, str]:
         return data.get("access_token", "0"), data.get("open_id", "0")
 
 
-async def create_jwt(uid: str, password: str) -> tuple[str, str, str]:
+async def create_jwt(uid: str, password: str,
+                     region: str = "") -> tuple[str, str, str]:
     """
     Full JWT generation flow using full device fingerprint MajorLogin.
     Returns: (jwt_token, lock_region, server_url)
+    region: hint passed as field 26 in MajorLogin so Garena assigns the right server.
     Tries platform types [4=Guest, 8=Google, 3=Facebook, 6=Huawei] in order.
     """
     access_token, open_id = await get_oauth_token(uid, password)
@@ -127,7 +169,7 @@ async def create_jwt(uid: str, password: str) -> tuple[str, str, str]:
     # Try platform types — Guest (4) first, then Google, Facebook, Huawei
     for p_type in [4, 8, 3, 6]:
         try:
-            payload = _build_majorlogin(access_token, open_id, p_type)
+            payload = _build_majorlogin(access_token, open_id, p_type, region)
             async with httpx.AsyncClient(timeout=20, verify=False) as client:
                 r = await client.post(MAJOR_LOGIN_URL, content=payload, headers=headers)
                 if r.status_code != 200:
@@ -141,11 +183,11 @@ async def create_jwt(uid: str, password: str) -> tuple[str, str, str]:
                     login_res.ParseFromString(r.content)
 
                 token      = login_res.token
-                region     = login_res.lock_region
+                lock_region = login_res.lock_region
                 server_url = login_res.server_url
 
                 if token:
-                    return token, region or "0", server_url or "0"
+                    return token, lock_region or "0", server_url or "0"
         except Exception:
             continue
 

@@ -95,6 +95,34 @@ def _xor_openid(open_id: str) -> bytes:
     return bytes([ord(open_id[i]) ^ _KEYSTREAM[i % len(_KEYSTREAM)]
                   for i in range(len(open_id))])
 
+async def _choose_region(jwt: str, region: str) -> bool:
+    """Call ChooseRegion to lock a new account to the desired region."""
+    pkt = _pb_str(1, region.upper())
+    headers = {
+        "Accept-Encoding": "gzip",
+        "Authorization":   f"Bearer {jwt}",
+        "Connection":      "Keep-Alive",
+        "Content-Type":    "application/x-www-form-urlencoded",
+        "Expect":          "100-continue",
+        "ReleaseVersion":  "OB54",
+        "User-Agent":      "okhttp/3.12.1",
+        "X-GA":            "v1 1",
+        "X-Unity-Version": "2018.4.",
+    }
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=10) as client:
+            r = await client.post(
+                "https://loginbp.ggpolarbear.com/ChooseRegion",
+                content=_aes_encrypt(pkt),
+                headers=headers,
+            )
+            logger.debug(f"[ChooseRegion] {region} -> {r.status_code}")
+            return r.status_code == 200
+    except Exception as e:
+        logger.warning(f"[ChooseRegion] error: {e}")
+        return False
+
+
 def _gen_password(length: int = 12) -> str:
     chars = string.ascii_letters + string.digits
     return ''.join(random.choices(chars, k=length))
@@ -217,11 +245,23 @@ async def create_guest_account(region: str = "IND") -> dict | None:
                 logger.warning(f"[gen] MajorRegister {r3.status_code}: {r3.text[:200]}")
                 return None
 
-        # ── Step 4: Verify JWT via create_jwt ────────────────────────────────
-        jwt, lock_region, server_url = await create_jwt(uid, password)
+        # ── Step 4: MajorLogin with region hint ──────────────────────────────
+        jwt, lock_region, server_url = await create_jwt(uid, password, region=region)
         if not jwt:
             logger.warning(f"[gen] JWT verification failed for uid={uid}")
             return None
+
+        # ── Step 5: ChooseRegion if lock doesn't match desired ────────────
+        if lock_region and lock_region.upper() != region.upper():
+            logger.info(f"[gen] lock={lock_region} != {region}, calling ChooseRegion...")
+            chose_ok = await _choose_region(jwt, region)
+            if chose_ok:
+                # Re-login to get updated JWT with correct lock
+                try:
+                    jwt, lock_region, server_url = await create_jwt(uid, password, region=region)
+                except Exception:
+                    pass
+            logger.info(f"[gen] After ChooseRegion: lock={lock_region}")
 
         logger.info(f"[gen] ✅ uid={uid} lock={lock_region} srv={server_url}")
         return {
