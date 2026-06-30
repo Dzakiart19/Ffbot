@@ -24,8 +24,14 @@ MONGODB_URI = os.environ.get("MONGODB_URI", "")
 JWT_SECRET  = os.environ.get("JWT_SECRET")
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET environment variable is required but not set")
+if not MONGODB_URI:
+    raise RuntimeError("MONGODB_URI environment variable is required but not set")
 
-client      = MongoClient(MONGODB_URI)
+client      = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+try:
+    client.admin.command("ping")
+except Exception as e:
+    raise RuntimeError(f"Cannot connect to MongoDB: {e}")
 db          = client.get_database("kiosgamer")
 users_col   = db["users"]
 orders_col  = db["orders"]
