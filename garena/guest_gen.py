@@ -16,10 +16,7 @@ import time
 import logging
 import threading
 import requests
-import urllib3
 from concurrent.futures import ThreadPoolExecutor
-
-urllib3.disable_warnings()
 logger = logging.getLogger(__name__)
 
 # ── Import langsung dari guest.py di root project ─────────────────────────────

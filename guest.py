@@ -24,8 +24,6 @@ except:
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import requests
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 ReGiOn = "ID"
 NiCkNaMe = "KiosGmr"

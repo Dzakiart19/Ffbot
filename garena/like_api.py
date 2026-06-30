@@ -76,7 +76,7 @@ def _make_headers(token: str) -> dict:
 async def _get_player_info(uid: str, server_url: str, token: str) -> dict:
     try:
         payload = _build_info_payload(uid)
-        async with httpx.AsyncClient(timeout=15, verify=False) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
                 f"{server_url}/GetPlayerPersonalShow",
                 content=payload,
@@ -224,7 +224,7 @@ def send_like_real(uid: str, region: str) -> dict:
             async with semaphore:
                 try:
                     payload = _build_like_payload(uid, lock_reg)
-                    async with httpx.AsyncClient(timeout=20, verify=False) as client:
+                    async with httpx.AsyncClient(timeout=20) as client:
                         r = await client.post(
                             f"{target_srv}/LikeProfile",
                             content=payload,

@@ -241,7 +241,7 @@ def send_like(user):
             "accounts_used": 0,
         }
 
-    if not result.get("success") and "error" in result:
+    if not result.get("success"):
         return jsonify(result), 400
 
     order_id = str(uuid.uuid4())[:8].upper()
@@ -481,7 +481,10 @@ def admin_add_account(user):
 def admin_auto_generate(user):
     data   = request.get_json(silent=True) or {}
     region = data.get("region", "ID").upper()
-    count  = min(int(data.get("count", 5)), 20)
+    try:
+        count = min(int(data.get("count", 5)), 20)
+    except (ValueError, TypeError):
+        return jsonify({"error": "count harus berupa angka"}), 400
 
     if not GARENA_OK:
         return jsonify({"error": "Garena module tidak tersedia"}), 500

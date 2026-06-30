@@ -170,7 +170,7 @@ async def create_jwt(uid: str, password: str,
     for p_type in [4, 8, 3, 6]:
         try:
             payload = _build_majorlogin(access_token, open_id, p_type, region)
-            async with httpx.AsyncClient(timeout=20, verify=False) as client:
+            async with httpx.AsyncClient(timeout=20) as client:
                 r = await client.post(MAJOR_LOGIN_URL, content=payload, headers=headers)
                 if r.status_code != 200:
                     continue
