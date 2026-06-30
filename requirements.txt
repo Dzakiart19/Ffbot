@@ -1,5 +1,6 @@
 psutil
 protobuf-decoder
+websocket-client
 flask==3.0.3
 flask-cors==4.0.1
 pymongo==4.7.3

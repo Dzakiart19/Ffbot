@@ -523,14 +523,14 @@ def admin_levelup(user):
     The team code must come from a real FF room created by the user.
     """
     data      = request.get_json(silent=True) or {}
-    region    = data.get("region", "ID").upper()
+    region    = str(data.get("region", "ID")).upper()
     team_code = str(data.get("team_code", "")).strip()
-    rounds    = int(data.get("rounds", 3))
 
     try:
-        count = min(int(data.get("count", 5)), 20)
+        count  = min(int(data.get("count", 5)), 20)
+        rounds = max(1, min(int(data.get("rounds", 3)), 10))
     except (ValueError, TypeError):
-        return jsonify({"error": "count harus berupa angka"}), 400
+        return jsonify({"error": "count dan rounds harus berupa angka"}), 400
 
     if not team_code or not team_code.isdigit():
         return jsonify({"error": "team_code wajib diisi (angka dari room FF kamu)"}), 400

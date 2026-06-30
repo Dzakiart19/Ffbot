@@ -17,11 +17,10 @@ import json
 import base64
 import re
 import requests
+import websocket   # websocket-client
 from datetime import datetime
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
-from google.protobuf.timestamp_pb2 import Timestamp
-from google.protobuf.json_format import MessageToJson
 
 from garena.get_jwt import create_jwt_full as _create_jwt_full
 
@@ -38,6 +37,12 @@ START_SPAM_DELAY    = 0.2   # delay between start packets
 # TCP server ports (standard FF game server ports)
 _TCP_ONLINE_PORT  = 17000
 _TCP_WHISPER_PORT = 17001
+
+# Cloudflare Worker WebSocket-to-TCP bridge URL
+CF_WORKER_BASE = "wss://dramain-aja.galerizaki.workers.dev/tcp"
+# Auth token — harus sama dengan CF_TOKEN yang di-set di Cloudflare Worker env vars
+import os as _os
+CF_TOKEN = _os.environ.get("CF_TOKEN", "")
 
 # Region → fallback TCP server IPs if tp_url is empty
 _REGION_TCP_IP = {
@@ -222,18 +227,18 @@ class _FFBotClient:
     """
 
     def __init__(self, uid: str, password: str):
-        self.uid      = uid
-        self.password = password
+        self.uid       = uid
+        self.password  = password
         self.key: bytes | None = None
         self.iv:  bytes | None = None
-        self._online_sock:  socket.socket | None = None
-        self._whisper_sock: socket.socket | None = None
+        self._online_ws:  websocket.WebSocket | None = None
+        self._whisper_ws: websocket.WebSocket | None = None
         self._stop = threading.Event()
 
     # ── Login ────────────────────────────────────────────────────────────────
 
     def login(self, region: str = "ID"):
-        """Full login → sets self.key / self.iv, returns (tcp_token_hex, w_ip, w_port, o_ip, o_port)."""
+        """Full login → sets self.key / self.iv, returns (tcp_token_hex, o_ip, o_port, w_ip, w_port)."""
         info = _login_sync(self.uid, self.password, region)
         jwt_token = info["token"]
         self.key  = info["ak"]
@@ -244,37 +249,41 @@ class _FFBotClient:
         o_port, w_port = _TCP_ONLINE_PORT, _TCP_WHISPER_PORT
 
         tcp_token = _build_tcp_token(jwt_token, self.key, self.iv, timestamp)
-        return tcp_token, w_ip, w_port, o_ip, o_port
+        return tcp_token, o_ip, o_port, w_ip, w_port
 
-    # ── Socket helpers ───────────────────────────────────────────────────────
+    # ── WebSocket helpers (via CF Worker bridge) ─────────────────────────────
 
-    def _connect_online(self, tcp_token: str, o_ip: str, o_port: int):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(15)
-        sock.connect((o_ip, o_port))
-        sock.settimeout(None)
-        sock.send(bytes.fromhex(tcp_token))
-        self._online_sock = sock
-        logger.debug(f"[{self.uid}] Online connected {o_ip}:{o_port}")
+    def _ws_connect(self, ip: str, port: int, tcp_token: str, label: str) -> websocket.WebSocket:
+        """Open WebSocket → CF Worker → TCP game server, send handshake token."""
+        import urllib.parse
+        ws_url = f"{CF_WORKER_BASE}?host={ip}&port={port}&token={urllib.parse.quote(CF_TOKEN)}"
+        ws = websocket.WebSocket()
+        ws.settimeout(15)
+        ws.connect(ws_url)
+        ws.send_binary(bytes.fromhex(tcp_token))
+        logger.debug(f"[{self.uid}] {label} WS connected → {ip}:{port}")
+        return ws
 
-    def _connect_whisper(self, tcp_token: str, w_ip: str, w_port: int):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(15)
-        sock.connect((w_ip, w_port))
-        sock.settimeout(None)
-        sock.send(bytes.fromhex(tcp_token))
-        self._whisper_sock = sock
-        logger.debug(f"[{self.uid}] Whisper connected {w_ip}:{w_port}")
+    def _ws_send(self, ws: websocket.WebSocket | None, data: bytes, label: str) -> bool:
+        """Send binary packet; returns True on success, False on failure."""
+        if ws is None:
+            return False
+        try:
+            ws.send_binary(data)
+            return True
+        except Exception as e:
+            logger.warning(f"[{self.uid}] {label} send error: {e}")
+            return False
 
     def _disconnect(self):
-        for sock in (self._online_sock, self._whisper_sock):
-            if sock:
+        for ws, label in ((self._online_ws, "online"), (self._whisper_ws, "whisper")):
+            if ws:
                 try:
-                    sock.close()
+                    ws.close()
                 except Exception:
                     pass
-        self._online_sock  = None
-        self._whisper_sock = None
+        self._online_ws  = None
+        self._whisper_ws = None
 
     # ── Levelup loop ─────────────────────────────────────────────────────────
 
@@ -286,10 +295,10 @@ class _FFBotClient:
         result = {"uid": self.uid, "success": False, "rounds_done": 0, "error": None}
         try:
             logger.info(f"[{self.uid}] Logging in for levelup...")
-            tcp_token, w_ip, w_port, o_ip, o_port = self.login(region)
+            tcp_token, o_ip, o_port, w_ip, w_port = self.login(region)
 
-            self._connect_online(tcp_token, o_ip, o_port)
-            self._connect_whisper(tcp_token, w_ip, w_port)
+            self._online_ws  = self._ws_connect(o_ip, o_port, tcp_token, "online")
+            self._whisper_ws = self._ws_connect(w_ip, w_port, tcp_token, "whisper")
 
             join_pkt  = _build_join_team_packet(team_code, self.key, self.iv)
             start_pkt = _build_start_packet(self.key, self.iv)
@@ -299,37 +308,39 @@ class _FFBotClient:
                 if self._stop.is_set():
                     break
                 logger.info(f"[{self.uid}] Round {rnd+1}/{rounds} — joining team {team_code}")
-                try:
-                    self._online_sock.send(join_pkt)
-                    time.sleep(2)
-                except Exception as e:
-                    logger.warning(f"[{self.uid}] Join failed: {e}")
+
+                if not self._ws_send(self._online_ws, join_pkt, "join"):
+                    logger.error(f"[{self.uid}] Join failed at round {rnd+1}, aborting")
                     break
+                time.sleep(2)
 
-                # Spam start packets
+                # Spam start packets; abort round on repeated failure
                 end_time = time.time() + START_SPAM_DURATION
+                start_fail = 0
                 while time.time() < end_time and not self._stop.is_set():
-                    try:
-                        self._online_sock.send(start_pkt)
-                    except Exception as e:
-                        logger.warning(f"[{self.uid}] Start packet error: {e}")
-                        break
+                    if not self._ws_send(self._online_ws, start_pkt, "start"):
+                        start_fail += 1
+                        if start_fail >= 3:
+                            logger.error(f"[{self.uid}] Start spam failed 3x, aborting")
+                            break
+                    else:
+                        start_fail = 0
                     time.sleep(START_SPAM_DELAY)
+                else:
+                    # Only mark round done if start spam ran without abort
+                    logger.info(f"[{self.uid}] Waiting {WAIT_AFTER_MATCH}s for match...")
+                    for _ in range(WAIT_AFTER_MATCH):
+                        if self._stop.is_set():
+                            break
+                        time.sleep(1)
 
-                logger.info(f"[{self.uid}] Waiting {WAIT_AFTER_MATCH}s for match...")
-                for _ in range(WAIT_AFTER_MATCH):
-                    if self._stop.is_set():
-                        break
-                    time.sleep(1)
-
-                # Leave
-                try:
-                    self._online_sock.send(leave_pkt)
+                    self._ws_send(self._online_ws, leave_pkt, "leave")
                     time.sleep(2)
-                except Exception:
-                    pass
+                    result["rounds_done"] += 1
+                    continue
 
-                result["rounds_done"] += 1
+                # Reached here means start failed — stop processing
+                break
 
             result["success"] = result["rounds_done"] > 0
         except Exception as e:
