@@ -58,7 +58,7 @@ CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
 # Must match the file names used by like_api.py / token_manager.py
 REGION_CONFIG = {
     "IND":    "ind_config.json",
-    "ID":     "sg_config.json",   # ID accounts live in sg_config (shared pool)
+    "ID":     "id_config.json",
     "SG":     "sg_config.json",
     "EUROPE": "europe_config.json",
     "RU":     "europe_config.json",

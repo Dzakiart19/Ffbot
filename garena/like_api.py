@@ -125,7 +125,7 @@ def _load_accounts(region: str) -> list:
     """Load accounts for the target region first, then fall back to others."""
     # Map target region → config file (matches token_manager.py)
     REGION_CONFIG = {
-        "ID":     "config/sg_config.json",
+        "ID":     "config/id_config.json",
         "SG":     "config/sg_config.json",
         "EUROPE": "config/europe_config.json",
         "RU":     "config/europe_config.json",

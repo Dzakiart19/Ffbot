@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 REGION_CONFIG = {
-    "ID":     "config/sg_config.json",
+    "ID":     "config/id_config.json",
     "SG":     "config/sg_config.json",
     "EUROPE": "config/europe_config.json",
     "RU":     "config/europe_config.json",

@@ -313,7 +313,54 @@ def create_lobby(user):
     })
 
 
+# ─── Routes: bio ────────────────────────────────────────────────────────────
+@app.route("/api/bio", methods=["POST"])
+@require_auth
+def update_bio(user):
+    data   = request.get_json(silent=True) or {}
+    uid    = str(data.get("uid", "")).strip()
+    bio    = str(data.get("bio", "")).strip()
+    region = str(data.get("region", "ID")).strip().upper()
+
+    if not uid or not uid.isdigit():
+        return jsonify({"error": "UID harus berupa angka"}), 400
+    if not bio:
+        return jsonify({"error": "Bio tidak boleh kosong"}), 400
+    if len(bio) > 60:
+        return jsonify({"error": "Bio maksimal 60 karakter"}), 400
+
+    if not GARENA_OK:
+        return jsonify({"error": "Garena module tidak tersedia. Fitur Update Bio membutuhkan koneksi ke server Garena."}), 503
+
+    return jsonify({
+        "success": False,
+        "error":   "Fitur Update Bio belum tersedia — endpoint Garena untuk bio update masih dalam pengembangan.",
+    }), 501
+
+
 # ─── Routes: progress ───────────────────────────────────────────────────────
+def _build_live_entries(db_orders):
+    entries = []
+    for o in db_orders:
+        before  = o.get("likes_before", 0)
+        added   = o.get("likes_added", 0)
+        after   = o.get("likes_after", before + added)
+        target  = after + random.randint(500, 5000)
+        proses  = added
+        tersisa = max(0, target - after)
+        entries.append({
+            "name":    o.get("player_name") or f"User#{str(o['uid'])[-4:]}",
+            "uid":     o["uid"],
+            "before":  before,
+            "added":   added,
+            "total":   after,
+            "proses":  proses,
+            "target":  target,
+            "tersisa": tersisa,
+        })
+    return entries
+
+
 @app.route("/api/progress", methods=["GET"])
 def get_progress():
     db_orders = list(orders_col.find(
@@ -322,26 +369,8 @@ def get_progress():
         sort=[("created_at", -1)]
     ))
 
-    if len(db_orders) >= 3:
-        entries = []
-        for o in db_orders:
-            before  = o.get("likes_before", random.randint(10000, 100000))
-            added   = o.get("likes_added", 0)
-            after   = o.get("likes_after", before + added)
-            target  = after + random.randint(500, 5000)
-            proses  = added
-            tersisa = max(0, target - after)
-            entries.append({
-                "name":    o.get("player_name") or f"User#{o['uid'][-4:]}",
-                "uid":     o["uid"],
-                "before":  before,
-                "added":   added,
-                "total":   after,
-                "proses":  proses,
-                "target":  target,
-                "tersisa": tersisa,
-            })
-        return jsonify({"entries": entries, "source": "live"})
+    if db_orders:
+        return jsonify({"entries": _build_live_entries(db_orders), "source": "live"})
 
     return jsonify({"entries": generate_demo_progress(), "source": "demo"})
 
@@ -350,8 +379,18 @@ def get_progress():
 def progress_stream():
     def generate():
         while True:
-            entries = generate_demo_progress()
-            yield f"data: {json.dumps({'entries': entries, 'ts': int(time.time())})}\n\n"
+            db_orders = list(orders_col.find(
+                {"type": "like", "status": "completed"},
+                limit=10,
+                sort=[("created_at", -1)]
+            ))
+            if db_orders:
+                entries = _build_live_entries(db_orders)
+                source  = "live"
+            else:
+                entries = generate_demo_progress()
+                source  = "demo"
+            yield f"data: {json.dumps({'entries': entries, 'source': source, 'ts': int(time.time())})}\n\n"
             time.sleep(5)
     return Response(
         stream_with_context(generate()),

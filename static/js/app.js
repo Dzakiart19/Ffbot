@@ -286,15 +286,35 @@ async function updateBio() {
   const bio = document.getElementById("bio-text").value.trim();
   const result = document.getElementById("bio-result");
 
-  if (!uid || !bio) { toast("Isi UID dan bio baru!", "error"); return; }
+  if (!uid) { toast("Masukkan UID Free Fire!", "error"); return; }
+  if (!/^\d+$/.test(uid)) { toast("UID harus berupa angka!", "error"); return; }
+  if (!bio) { toast("Isi bio baru kamu!", "error"); return; }
 
   result.className = "tool-result loading";
-  result.textContent = "⏳ Memperbarui bio...";
+  result.textContent = "⏳ Mengirim request ke server Garena...";
 
-  await new Promise(r => setTimeout(r, 1500));
-  result.className = "tool-result success";
-  result.innerHTML = `✅ Bio berhasil diperbarui untuk UID <b>${uid}</b>!<br><small style="color:#7a8ca0">Perubahan mungkin perlu beberapa menit untuk muncul</small>`;
-  toast("Bio diperbarui! 📝", "success");
+  try {
+    const r = await fetch(`${API}/api/bio`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${getToken()}`
+      },
+      body: JSON.stringify({ uid, bio, region: "ID" })
+    });
+    const data = await r.json();
+    if (r.ok && data.success) {
+      result.className = "tool-result success";
+      result.innerHTML = `✅ Bio berhasil diperbarui untuk UID <b>${uid}</b>!<br><small style="color:#7a8ca0">Perubahan mungkin perlu beberapa menit untuk muncul di profil</small>`;
+      toast("Bio diperbarui! 📝", "success");
+    } else {
+      result.className = "tool-result error";
+      result.innerHTML = `❌ ${data.error || "Gagal memperbarui bio"}`;
+    }
+  } catch {
+    result.className = "tool-result error";
+    result.textContent = "❌ Koneksi error. Coba lagi.";
+  }
 }
 
 /* ─── PROGRESS ──────────────────────────────── */
