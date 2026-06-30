@@ -21,7 +21,9 @@ app = Flask(__name__)
 CORS(app)
 
 MONGODB_URI = os.environ.get("MONGODB_URI", "")
-JWT_SECRET  = os.environ.get("JWT_SECRET", "fallback-secret")
+JWT_SECRET  = os.environ.get("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET environment variable is required but not set")
 
 client      = MongoClient(MONGODB_URI)
 db          = client.get_database("kiosgamer")
