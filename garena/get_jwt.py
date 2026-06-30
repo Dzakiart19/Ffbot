@@ -1,35 +1,36 @@
 """
 Garena Free Fire JWT generator.
-Flow: uid+password → OAuth token → LoginReq protobuf → AES encrypt → MajorLogin → JWT
-Based on: github.com/kaifcodec/freefire-like-and-guest-api
+Flow: uid+password → OAuth token → MajorLogin protobuf (full device fingerprint) → JWT
+Updated to use OB54 endpoint and detailed device fingerprint for higher success rate.
 """
 import base64
-import json
 import asyncio
 import httpx
-from google.protobuf import json_format
+from datetime import datetime
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
+from Crypto.Util.Padding import pad, unpad
 
-from garena.ff_proto import freefire_pb2
+from garena.ff_proto.MajoRLogin_pb2   import MajorLogin
+from garena.ff_proto.MajorLoginRes_pb2 import MajorLoginRes
 
-# AES keys (base64 encoded in source)
-MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')   # = b'Yg&tc%DEuh6%Zc^8'
-MAIN_IV  = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')   # = b'6oyZDr22E3ychjM%'
+# AES keys (same as before)
+MAIN_KEY = base64.b64decode('WWcmdGMlREV1aDYlWmNeOA==')   # b'Yg&tc%DEuh6%Zc^8'
+MAIN_IV  = base64.b64decode('Nm95WkRyMjJFM3ljaGpNJQ==')   # b'6oyZDr22E3ychjM%'
 
-RELEASE_VERSION = "OB50"
-USER_AGENT      = "Dalvik/2.1.0 (Linux; U; Android 13; CPH2095 Build/RKQ1.211119.001)"
+RELEASE_VERSION = "OB54"
+USER_AGENT      = "Dalvik/2.1.0 (Linux; U; Android 11; SM-S908E Build/TP1A.220624.014)"
 
-OAUTH_URL   = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
-CLIENT_ID   = "100067"
+OAUTH_URL     = "https://ffmconnect.live.gop.garenanow.com/oauth/guest/token/grant"
+CLIENT_ID     = "100067"
 CLIENT_SECRET = "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3"
 
+# Updated login endpoint (ggpolarbear is newer than ggblueshark)
+MAJOR_LOGIN_URL = "https://loginbp.ggpolarbear.com/MajorLogin"
 LOGIN_URLS = {
     "IND": "https://loginbp.ind.freefiremobile.com/MajorLogin",
     "BR":  "https://loginbp.us.freefiremobile.com/MajorLogin",
     "US":  "https://loginbp.us.freefiremobile.com/MajorLogin",
 }
-DEFAULT_LOGIN_URL = "https://loginbp.ggblueshark.com/MajorLogin"
 
 
 def _aes_encrypt(plaintext: bytes) -> bytes:
@@ -37,10 +38,50 @@ def _aes_encrypt(plaintext: bytes) -> bytes:
     return cipher.encrypt(pad(plaintext, AES.block_size))
 
 
-def _decode_proto(data: bytes, msg_class):
-    obj = msg_class()
-    obj.ParseFromString(data)
-    return obj
+def _aes_decrypt(data: bytes) -> bytes:
+    try:
+        cipher = AES.new(MAIN_KEY, AES.MODE_CBC, MAIN_IV)
+        return unpad(cipher.decrypt(data), AES.block_size)
+    except Exception:
+        return data
+
+
+def _build_majorlogin(access_token: str, open_id: str, platform_type: int = 4) -> bytes:
+    """Build MajorLogin protobuf with full device fingerprint."""
+    m = MajorLogin()
+    m.event_time           = str(datetime.now())[:-7]
+    m.game_name            = "free fire"
+    m.platform_id          = platform_type
+    m.client_version       = "1.120.1"
+    m.system_software      = "Android OS 9 / API-28"
+    m.system_hardware      = "Handheld"
+    m.telecom_operator     = "Verizon"
+    m.network_type         = "WIFI"
+    m.screen_width         = 1920
+    m.screen_height        = 1080
+    m.screen_dpi           = "280"
+    m.processor_details    = "ARM64 FP ASIMD AES VMH | 2865 | 4"
+    m.memory               = 3003
+    m.gpu_renderer         = "Adreno (TM) 640"
+    m.gpu_version          = "OpenGL ES 3.1 v1.46"
+    m.unique_device_id     = "Google|34a7dcdf-a7d5-4cb6-8d7e-3b0e448a0c57"
+    m.client_ip            = "223.191.51.89"
+    m.language             = "en"
+    m.open_id              = open_id
+    m.open_id_type         = str(platform_type)
+    m.device_type          = "Handheld"
+    m.access_token         = access_token
+    m.platform_sdk_id      = 1
+    m.client_using_version = "7428b253defc164018c604a1ebbfebdf"
+    m.login_by             = 3
+    m.channel_type         = 3
+    m.cpu_type             = 2
+    m.cpu_architecture     = "64"
+    m.client_version_code  = "2019118695"
+    m.login_open_id_type   = platform_type
+    m.origin_platform_type = str(platform_type)
+    m.primary_platform_type= str(platform_type)
+    return _aes_encrypt(m.SerializeToString())
 
 
 async def get_oauth_token(uid: str, password: str) -> tuple[str, str]:
@@ -64,24 +105,14 @@ async def get_oauth_token(uid: str, password: str) -> tuple[str, str]:
 
 async def create_jwt(uid: str, password: str) -> tuple[str, str, str]:
     """
-    Full JWT generation flow.
+    Full JWT generation flow using full device fingerprint MajorLogin.
     Returns: (jwt_token, lock_region, server_url)
+    Tries platform types [4=Guest, 8=Google, 3=Facebook, 6=Huawei] in order.
     """
     access_token, open_id = await get_oauth_token(uid, password)
     if access_token == "0":
         raise ValueError(f"OAuth failed for uid={uid}")
 
-    # Build LoginReq protobuf
-    login_req = freefire_pb2.LoginReq()
-    login_req.open_id            = open_id
-    login_req.open_id_type       = "4"
-    login_req.login_token        = access_token
-    login_req.orign_platform_type = "4"
-
-    proto_bytes   = login_req.SerializeToString()
-    encrypted     = _aes_encrypt(proto_bytes)
-
-    login_url = DEFAULT_LOGIN_URL
     headers = {
         "User-Agent":      USER_AGENT,
         "Connection":      "Keep-Alive",
@@ -93,16 +124,29 @@ async def create_jwt(uid: str, password: str) -> tuple[str, str, str]:
         "ReleaseVersion":  RELEASE_VERSION,
     }
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(login_url, content=encrypted, headers=headers)
-        login_res = _decode_proto(r.content, freefire_pb2.LoginRes)
-        msg = json.loads(json_format.MessageToJson(login_res))
+    # Try platform types — Guest (4) first, then Google, Facebook, Huawei
+    for p_type in [4, 8, 3, 6]:
+        try:
+            payload = _build_majorlogin(access_token, open_id, p_type)
+            async with httpx.AsyncClient(timeout=20, verify=False) as client:
+                r = await client.post(MAJOR_LOGIN_URL, content=payload, headers=headers)
+                if r.status_code != 200:
+                    continue
 
-        token      = msg.get("token", "0")
-        region     = msg.get("lockRegion", msg.get("lock_region", "0"))
-        server_url = msg.get("serverUrl", msg.get("server_url", "0"))
+                # Try AES-decrypted response first, then raw
+                login_res = MajorLoginRes()
+                try:
+                    login_res.ParseFromString(_aes_decrypt(r.content))
+                except Exception:
+                    login_res.ParseFromString(r.content)
 
-        if token == "0":
-            raise ValueError(f"MajorLogin failed for uid={uid}, response: {msg}")
+                token      = login_res.token
+                region     = login_res.lock_region
+                server_url = login_res.server_url
 
-        return token, region, server_url
+                if token:
+                    return token, region or "0", server_url or "0"
+        except Exception:
+            continue
+
+    raise ValueError(f"MajorLogin failed for uid={uid} — all platform types tried")
