@@ -9,7 +9,7 @@ import requests
 import json
 import os
 
-from garena.token_manager import token_manager, SERVERS, JWT_API
+from garena.token_manager import token_manager
 
 logger = logging.getLogger(__name__)
 
