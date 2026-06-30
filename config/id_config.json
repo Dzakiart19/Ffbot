@@ -42,5 +42,65 @@
     "password": "KIOSGMR_Z9QZ.K-GMRSJEPWR3",
     "game_uid": "16248168012",
     "lock_region": "ID"
+  },
+  {
+    "uid": "5423600985",
+    "password": "KIOSGMR_NJDJ_9-GMRS7T7V2U",
+    "game_uid": "16248200593",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423600979",
+    "password": "KIOSGMR_-9PB7T-GMRS56IQ8K",
+    "game_uid": "16248200595",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423600992",
+    "password": "KIOSGMR_B3F5L1-GMRSKMI_4U",
+    "game_uid": "16248200598",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423600987",
+    "password": "KIOSGMR_M94H31-GMRS_D3M7_",
+    "game_uid": "16248200601",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423600978",
+    "password": "KIOSGMR_GD_UM2-GMRSB8KYUV",
+    "game_uid": "16248200600",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423601001",
+    "password": "KIOSGMR_ZLBBX4-GMRSXYBIXG",
+    "game_uid": "16248200605",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423600999",
+    "password": "KIOSGMR_M-9H7X-GMRS0I7.OK",
+    "game_uid": "16248200608",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423601000",
+    "password": "KIOSGMR_VEMFUR-GMRS__8P47",
+    "game_uid": "16248200609",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423600996",
+    "password": "KIOSGMR__-EHXO-GMRSX-9P4Y",
+    "game_uid": "16248200604",
+    "lock_region": "ID"
+  },
+  {
+    "uid": "5423601006",
+    "password": "KIOSGMR_CX8UH0-GMRSMVELH_",
+    "game_uid": "16248200606",
+    "lock_region": "ID"
   }
 ]
